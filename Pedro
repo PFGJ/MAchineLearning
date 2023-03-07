@@ -1,0 +1,878 @@
+//+------------------------------------------------------------------+
+//|                                              AI_K10_Previsão.mq5 |
+//|                                  Copyright 2022, MetaQuotes Ltd. |
+//|                                             https://www.mql5.com |
+//+------------------------------------------------------------------+
+#include <NeuralNetwork.mqh>
+#include <MinhasFuncoes.mqh>
+
+
+
+//Nome do projeto: K10
+enum SimNao
+  {
+   Sim = 1,
+   Nao = 0,
+  };
+// Parâmetros de entrada
+input int QtNeuronios = 10;
+input int num_candles = 4;//Verificar padrão de Candles a cada x candles
+input int period_rsi = 14;//Período RSI
+input int period_stochastic = 14;//Período estocástico
+input int period_ma1 = 10;//Período média móvel rápida
+input int period_ma2 = 30;//Período média móvel lenta
+input string Linha1000 = "---APRENDIZADO---";
+input int PeriodoDeColetaDeDadosParaAprendizado = 230;//Período de coleta de dados para o aprendizado
+input int DigitosDePrecisao = 3;//Dígitos de precisão (após vírgula)
+input int PeriodoParaResultado = 3;//Período para o resultado (rotulação) na aprendizagem
+input double ToleranciaDeVariacao = 0.02;//Quanto o preço pode variar para registrar tendência
+
+// Arrays para os dados de entrada
+MqlRates candles[], candles_Teste[];
+double RSI[], RSI_Teste[];
+double stochastic_k[], stochastic_k_Teste[];
+double stochastic_d[], stochastic_d_Teste[];
+double media_movel_X[], media_movel_X_Teste[];
+double media_movel_Y[], media_movel_Y_Teste[];
+int ArrayRotulos[], ArrayRotulos_Teste[];
+string ArrayRotulacaoString[], ArrayRotulacaoString_Teste[];
+int ContaSubiu = 0;
+int ContaCaiu = 0;
+int ContaNeutro = 0;
+int ContaSubiu_Teste = 0;
+int ContaCaiu_Teste = 0;
+int ContaNeutro_Teste = 0;
+int MatrizClasses[1000][3] = {0};
+int MatrizClasses_Teste[1000][3] = {0};
+int IntervaloDaExtracao = PeriodoDeColetaDeDadosParaAprendizado;
+int Acertos = 0;
+int Erros = 0;
+int AcertosSubiu = 0;
+int AcertosCaiu = 0;
+int PreviuQueSubiu;
+int PreviuQueCaiu;
+
+
+//Arrays para armazenar os dados prontos para o aprendizado e testes
+double DadosProntos_candles[], DadosProntos_candles_Teste[];
+double DadosProntos_RSI[], DadosProntos_RSI_Teste[];
+double DadosProntos_stochastic_k[], DadosProntos_stochastic_k_Teste[];
+double DadosProntos_stochastic_d[], DadosProntos_stochastic_d_Teste[];
+double DadosProntos_media_movel[], DadosProntos_media_movel_Teste[];
+double PercentualAcertos = 0;
+double PercentualErros = 0;
+double PercentualAcertosSubiu = 0;
+double PercentualAcertosCaiu = 0;
+int ResultPrevisao[1000][3];
+// Criar matriz de entrada com 1000 linhas e 3 colunas
+matrix Matriz_Classes(PeriodoDeColetaDeDadosParaAprendizado, 3);
+matrix Matriz_Dados(PeriodoDeColetaDeDadosParaAprendizado, 5);
+matrix Matriz_Classes_Teste(PeriodoDeColetaDeDadosParaAprendizado, 3);
+matrix Matriz_Dados_Teste(PeriodoDeColetaDeDadosParaAprendizado, 5);
+
+// Criar uma instância da classe NeuralNetwork
+NeuralNetwork NN(PeriodoDeColetaDeDadosParaAprendizado,5,QtNeuronios,3,.0001,1);
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+//Contabiliza Acertos, erros e Percentuais
+int ContaAcertosErrosPercentuais()//Retorna o N° geral de acertos contando também mercado neutro
+  {
+   for(int i = 0; i < PeriodoDeColetaDeDadosParaAprendizado; i++)
+     {
+
+      if(ResultPrevisao[i][0] == MatrizClasses_Teste[i][0] && ResultPrevisao[i][1] == MatrizClasses_Teste[i][1] && ResultPrevisao[i][2] == MatrizClasses_Teste[i][2])
+        {
+         Acertos++;
+        }
+      else
+        {
+         Erros++;
+        }
+    
+     }
+   PercentualAcertos = (double)Acertos/(Acertos + Erros)*100;
+   PercentualErros = (double)Erros / (Acertos + Erros)*100;
+   PercentualAcertosSubiu = (double)AcertosSubiu/PreviuQueSubiu;
+   PercentualAcertosCaiu = (double)AcertosCaiu/PreviuQueCaiu;
+   
+   LimitaDigitos(PercentualAcertos,1);
+   LimitaDigitos(PercentualErros,1);
+   LimitaDigitos(PercentualAcertosSubiu,1);
+   LimitaDigitos(PercentualAcertosCaiu,1);
+   return Acertos;
+  }
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+void PreencheMatrizes()
+  {
+   for(int i = 0; i < PeriodoDeColetaDeDadosParaAprendizado; i++)
+     {
+      for(int j = 0; j < 3; j++)
+        {
+         Matriz_Classes[i][j] = MatrizClasses[i][j];
+        }
+      //Preenche dados coletados
+      Matriz_Dados[i][0] = DadosProntos_candles[i];
+      Matriz_Dados[i][1] = DadosProntos_RSI[i];
+      Matriz_Dados[i][2] = DadosProntos_stochastic_k[i];
+      Matriz_Dados[i][3] = DadosProntos_stochastic_d[i];
+      Matriz_Dados[i][4] = DadosProntos_media_movel[i];
+
+     }
+  }
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+void PreencheMatrizesDeTestes()
+  {
+   for(int i = 0; i < PeriodoDeColetaDeDadosParaAprendizado; i++)
+     {
+      for(int j = 0; j < 3; j++)
+        {
+         Matriz_Classes_Teste[i][j] = MatrizClasses_Teste[i][j];
+        }
+      //Preenche dados coletados
+      Matriz_Dados_Teste[i][0] = DadosProntos_candles_Teste[i];
+      Matriz_Dados_Teste[i][1] = DadosProntos_RSI_Teste[i];
+      Matriz_Dados_Teste[i][2] = DadosProntos_stochastic_k_Teste[i];
+      Matriz_Dados_Teste[i][3] = DadosProntos_stochastic_d_Teste[i];
+      Matriz_Dados_Teste[i][4] = DadosProntos_media_movel_Teste[i];
+
+     }
+  }
+
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+void PreencheMatrizeDeSaida()
+  {
+
+  }
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+bool DiferencaDeMedias()
+  {
+   double soma = 0;
+   int M1 = INVALID_HANDLE;
+   int M2 = INVALID_HANDLE;
+   M1 = iMA(_Symbol,PERIOD_CURRENT,period_ma1,0,MODE_SMA,PRICE_CLOSE);
+   M2 = iMA(_Symbol,PERIOD_CURRENT,period_ma2,0,MODE_SMA,PRICE_CLOSE);
+   CopyBuffer(M1,0,PeriodoParaResultado + IntervaloDaExtracao,PeriodoDeColetaDeDadosParaAprendizado,media_movel_X);
+   CopyBuffer(M2,0,PeriodoParaResultado + IntervaloDaExtracao,PeriodoDeColetaDeDadosParaAprendizado,media_movel_Y);
+   ArrayResize(DadosProntos_media_movel,PeriodoDeColetaDeDadosParaAprendizado);
+   for(int A = 0; A < PeriodoDeColetaDeDadosParaAprendizado; A++)
+     {
+      DadosProntos_media_movel[A] = media_movel_X[A] - media_movel_Y[A];
+      soma += (media_movel_X[A] - media_movel_Y[A]);
+     }
+
+   normalizaDados(DadosProntos_media_movel,DigitosDePrecisao,"0");
+   if(soma == 0 || ArraySize(DadosProntos_media_movel) == 0 || M1 == INVALID_HANDLE || M2 == INVALID_HANDLE)
+     {
+      return false;
+     }
+   return true;
+  }
+//-----------------------------------------------
+bool DiferencaDeMedias_Teste()
+  {
+   double soma = 0;
+   int M1 = INVALID_HANDLE;
+   int M2 = INVALID_HANDLE;
+   M1 = iMA(_Symbol,PERIOD_CURRENT,period_ma1,0,MODE_SMA,PRICE_CLOSE);
+   M2 = iMA(_Symbol,PERIOD_CURRENT,period_ma2,0,MODE_SMA,PRICE_CLOSE);
+   CopyBuffer(M1,0,PeriodoParaResultado,PeriodoDeColetaDeDadosParaAprendizado,media_movel_X_Teste);
+   CopyBuffer(M2,0,PeriodoParaResultado,PeriodoDeColetaDeDadosParaAprendizado,media_movel_Y_Teste);
+   ArrayResize(DadosProntos_media_movel_Teste,PeriodoDeColetaDeDadosParaAprendizado);
+   for(int A = 0; A < PeriodoDeColetaDeDadosParaAprendizado; A++)
+     {
+      DadosProntos_media_movel_Teste[A] = media_movel_X_Teste[A] - media_movel_Y_Teste[A];
+      soma += (media_movel_X_Teste[A] - media_movel_Y_Teste[A]);
+     }
+
+   normalizaDados(DadosProntos_media_movel_Teste,DigitosDePrecisao,"0");
+   if(soma == 0 || ArraySize(DadosProntos_media_movel_Teste) == 0 || M1 == INVALID_HANDLE || M2 == INVALID_HANDLE)
+     {
+      return false;
+     }
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+string ConcatenaMatriz(int i)
+  {
+   int a1, a2, a3;
+   a1 = MatrizClasses[i][0];
+   a2 = MatrizClasses[i][1];
+   a3 = MatrizClasses[i][2];
+
+   string Concatenado = " " + IntegerToString(a1,0) + " " + IntegerToString(a2,0) + " " + IntegerToString(a3,0);
+   return Concatenado;
+  }
+
+//Guarda e verifica a tendência do preço no período de aprendizagem
+bool VerificaTendenciaERotula(int PeriodoDeResultado)
+  {
+   MqlRates Preco[];
+   ArraySetAsSeries(Preco,true);
+   ArraySetAsSeries(ArrayRotulos,true);
+   ArraySetAsSeries(ArrayRotulacaoString, true);
+//----
+   ArrayResize(ArrayRotulos,PeriodoDeColetaDeDadosParaAprendizado);
+   ArrayResize(ArrayRotulacaoString,PeriodoDeColetaDeDadosParaAprendizado);
+//----
+   CopyRates(_Symbol,PERIOD_CURRENT, IntervaloDaExtracao,PeriodoDeColetaDeDadosParaAprendizado + PeriodoParaResultado,Preco);
+
+   int Tamanho = PeriodoDeColetaDeDadosParaAprendizado;
+   for(int i = 0; i < Tamanho; i++)
+     {
+      if((Preco[i+PeriodoDeResultado].close + ToleranciaDeVariacao) < Preco[i].close)
+        {
+         ArrayRotulos[i] = 1;
+         ArrayRotulacaoString[i] = "Subiu";
+         MatrizClasses[i][0] = 1;
+         ContaSubiu++;
+        }
+      if((Preco[i+PeriodoDeResultado].close - ToleranciaDeVariacao) > Preco[i].close)
+        {
+         ArrayRotulos[i] = -1;
+         ArrayRotulacaoString[i] = "Caiu";
+         MatrizClasses[i][2] = 1;
+         ContaCaiu++;
+        }
+      if((Preco[i].close <= Preco[i+PeriodoDeResultado].close + ToleranciaDeVariacao) && (Preco[i].close >= Preco[i+PeriodoDeResultado].close - ToleranciaDeVariacao))
+        {
+         ArrayRotulos[i] = 0;
+         ArrayRotulacaoString[i] = "Neutro";
+         MatrizClasses[i][1] = 1;
+         ContaNeutro++;
+        }
+     }
+   if(Tamanho > 0)
+     {
+      return true;
+     }
+   return false;
+  }
+//Guarda e verifica a tendência do preço no período de aprendizagem PARA TESTES
+bool VerificaTendenciaERotula_Teste(int PeriodoDeResultado)
+  {
+   MqlRates Preco[];
+   ArraySetAsSeries(Preco,true);
+   ArraySetAsSeries(ArrayRotulos_Teste,true);
+   ArraySetAsSeries(ArrayRotulacaoString_Teste, true);
+//----
+   ArrayResize(ArrayRotulos_Teste,PeriodoDeColetaDeDadosParaAprendizado);
+   ArrayResize(ArrayRotulacaoString_Teste,PeriodoDeColetaDeDadosParaAprendizado);
+//----
+   CopyRates(_Symbol,PERIOD_CURRENT, 0,PeriodoDeColetaDeDadosParaAprendizado + PeriodoParaResultado,Preco);
+
+   int Tamanho = PeriodoDeColetaDeDadosParaAprendizado;
+   for(int i = 0; i < Tamanho; i++)
+     {
+      if((Preco[i+PeriodoDeResultado].close + ToleranciaDeVariacao) < Preco[i].close)
+        {
+         ArrayRotulos_Teste[i] = 1;
+         ArrayRotulacaoString_Teste[i] = "Subiu";
+         MatrizClasses_Teste[i][0] = 1;
+         ContaSubiu_Teste++;
+        }
+      if((Preco[i+PeriodoDeResultado].close - ToleranciaDeVariacao) > Preco[i].close)
+        {
+         ArrayRotulos_Teste[i] = -1;
+         ArrayRotulacaoString_Teste[i] = "Caiu";
+         MatrizClasses_Teste[i][2] = 1;
+         ContaCaiu_Teste++;
+        }
+      if((Preco[i].close <= Preco[i+PeriodoDeResultado].close + ToleranciaDeVariacao) && (Preco[i].close >= Preco[i+PeriodoDeResultado].close - ToleranciaDeVariacao))
+        {
+         ArrayRotulos_Teste[i] = 0;
+         ArrayRotulacaoString_Teste[i] = "Neutro";
+         MatrizClasses_Teste[i][1] = 1;
+         ContaNeutro_Teste++;
+        }
+     }
+   if(Tamanho > 0)
+     {
+      return true;
+     }
+   return false;
+  }
+//+------------------------------------------------------------------+
+bool LerCandles()
+  {
+   ArrayResize(DadosProntos_candles, PeriodoDeColetaDeDadosParaAprendizado);
+   ArrayResize(candles, PeriodoDeColetaDeDadosParaAprendizado);
+   ArraySetAsSeries(candles,true);
+//----
+   for(int A = 0; A < PeriodoDeColetaDeDadosParaAprendizado; A++)
+     {
+      // Inicializa a variável que armazenará a soma
+      double Somatorio = 0;
+
+      // Verifica se foi possível copiar os candles
+      if(CopyRates(_Symbol, PERIOD_CURRENT, A + PeriodoParaResultado  + IntervaloDaExtracao, num_candles, candles) == num_candles)
+        {
+         // Loop que calcula a soma dos valores
+         for(int i = 0; i < num_candles; i++)
+           {
+            // Adiciona o resultado do cálculo na soma
+
+            Somatorio += (candles[i].close - candles[i].low) / (candles[i].high - candles[i].low);
+
+           }
+        }
+      else
+        {
+         // Imprime uma mensagem de erro caso não seja possível copiar os candles
+         Print("#####################ERRO NUM CANDLE");
+         return false;
+        }
+
+      // Armazena o valor da soma no array
+      DadosProntos_candles[A] = Somatorio;
+     }
+
+// Chama a função para normalizar os dados
+   normalizaDados(DadosProntos_candles,DigitosDePrecisao, "0");
+
+// Retorna verdadeiro para indicar que a leitura dos candles foi realizada com sucesso
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//Ler Candles DADOS DE TESTES
+bool LerCandles_Teste()
+  {
+   ArrayResize(DadosProntos_candles_Teste, PeriodoDeColetaDeDadosParaAprendizado);
+   ArrayResize(candles_Teste, PeriodoDeColetaDeDadosParaAprendizado);
+   ArraySetAsSeries(candles_Teste,true);
+//----
+   for(int A = 0; A < PeriodoDeColetaDeDadosParaAprendizado; A++)
+     {
+      // Inicializa a variável que armazenará a soma
+      double Somatorio = 0;
+
+      // Verifica se foi possível copiar os candles
+      if(CopyRates(_Symbol, PERIOD_CURRENT, A + PeriodoParaResultado, num_candles, candles_Teste) == num_candles)
+        {
+         // Loop que calcula a soma dos valores
+         for(int i = 0; i < num_candles; i++)
+           {
+            // Adiciona o resultado do cálculo na soma
+
+            Somatorio += (candles_Teste[i].close - candles_Teste[i].low) / (candles_Teste[i].high - candles_Teste[i].low);
+
+           }
+        }
+      else
+        {
+         // Imprime uma mensagem de erro caso não seja possível copiar os candles
+         Print("#####################ERRO NUM CANDLE");
+         return false;
+        }
+
+      // Armazena o valor da soma no array
+      DadosProntos_candles_Teste[A] = Somatorio;
+     }
+
+// Chama a função para normalizar os dados
+   normalizaDados(DadosProntos_candles_Teste,DigitosDePrecisao, "0");
+
+// Retorna verdadeiro para indicar que a leitura dos candles foi realizada com sucesso
+   return true;
+  }
+
+
+// Função para ler o RSI
+bool LerRSI()
+  {
+   int i, limit;
+   double rsi, sum_Gain = 0, sum_Loss = 0;
+   MqlRates rates[];
+   ArraySetAsSeries(rates,true);
+   ArrayResize(rates, period_rsi);
+   ArrayResize(DadosProntos_RSI, PeriodoDeColetaDeDadosParaAprendizado);
+   ArraySetAsSeries(RSI,true);
+   for(int A = 0; A < PeriodoDeColetaDeDadosParaAprendizado; A++)
+     {
+      double SomaRSI = 0;
+      if(CopyRates(_Symbol, PERIOD_CURRENT, A + PeriodoParaResultado  + IntervaloDaExtracao, period_rsi, rates) == period_rsi)
+        {
+         limit = period_rsi;
+         ArrayResize(RSI,period_rsi);
+         for(i = 0; i < limit; i++)
+           {
+            if(i == 0)
+              {
+               sum_Gain = 0.0;
+               sum_Loss = 0.0;
+               for(int j = 0; j < limit; j++)
+                 {
+                  if(rates[j].close > rates[j].open)
+                    {
+                     sum_Gain += rates[j].close - rates[j].open;
+                    }
+                  else
+                    {
+                     sum_Loss += rates[j].open - rates[j].close;
+                    }
+                 }
+               rsi = 100.0 - (100.0 / (1.0 + (sum_Gain / sum_Loss)));
+              }
+            else
+              {
+               if(rates[i].close > rates[i - 1].close)
+                 {
+                  sum_Gain = (sum_Gain * (limit - 1) + (rates[i].close - rates[i - 1].close)) / limit;
+                  sum_Loss = (sum_Loss * (limit - 1)) / limit;
+                 }
+               else
+                 {
+                  sum_Loss = (sum_Loss * (limit - 1) + (rates[i - 1].close - rates[i].close)) / limit;
+                  sum_Gain = (sum_Gain * (limit - 1)) / limit;
+                 }
+               rsi = 100.0 - (100.0 / (1.0 + (sum_Gain / sum_Loss)));
+              }
+            RSI[i] = rsi;
+            SomaRSI += RSI[i];
+           }
+         DadosProntos_RSI[A] = SomaRSI / limit;
+         if(ArraySize(DadosProntos_RSI) != PeriodoDeColetaDeDadosParaAprendizado)
+           {
+            Print("#################################ERRO RSI");
+            return false;
+           }
+        }
+     }
+   normalizaDados(DadosProntos_RSI,DigitosDePrecisao,"0");
+   return true;
+  }
+
+// Função para ler o RSI DADOS DE TESTES
+bool LerRSI_Teste()
+  {
+   int i, limit;
+   double rsi, sum_Gain = 0, sum_Loss = 0;
+   MqlRates rates[];
+   ArraySetAsSeries(rates,true);
+   ArrayResize(rates, period_rsi);
+   ArrayResize(DadosProntos_RSI_Teste, PeriodoDeColetaDeDadosParaAprendizado);
+   ArraySetAsSeries(RSI_Teste,true);
+   for(int A = 0; A < PeriodoDeColetaDeDadosParaAprendizado; A++)
+     {
+      double SomaRSI = 0;
+      if(CopyRates(_Symbol, PERIOD_CURRENT, A + PeriodoParaResultado, period_rsi, rates) == period_rsi)
+        {
+         limit = period_rsi;
+         ArrayResize(RSI_Teste,period_rsi);
+         for(i = 0; i < limit; i++)
+           {
+            if(i == 0)
+              {
+               sum_Gain = 0.0;
+               sum_Loss = 0.0;
+               for(int j = 0; j < limit; j++)
+                 {
+                  if(rates[j].close > rates[j].open)
+                    {
+                     sum_Gain += rates[j].close - rates[j].open;
+                    }
+                  else
+                    {
+                     sum_Loss += rates[j].open - rates[j].close;
+                    }
+                 }
+               rsi = 100.0 - (100.0 / (1.0 + (sum_Gain / sum_Loss)));
+              }
+            else
+              {
+               if(rates[i].close > rates[i - 1].close)
+                 {
+                  sum_Gain = (sum_Gain * (limit - 1) + (rates[i].close - rates[i - 1].close)) / limit;
+                  sum_Loss = (sum_Loss * (limit - 1)) / limit;
+                 }
+               else
+                 {
+                  sum_Loss = (sum_Loss * (limit - 1) + (rates[i - 1].close - rates[i].close)) / limit;
+                  sum_Gain = (sum_Gain * (limit - 1)) / limit;
+                 }
+               rsi = 100.0 - (100.0 / (1.0 + (sum_Gain / sum_Loss)));
+              }
+            RSI_Teste[i] = rsi;
+            SomaRSI += RSI_Teste[i];
+           }
+         DadosProntos_RSI_Teste[A] = SomaRSI / limit;
+         if(ArraySize(DadosProntos_RSI_Teste) != PeriodoDeColetaDeDadosParaAprendizado)
+           {
+            Print("#################################ERRO RSI");
+            return false;
+           }
+        }
+     }
+   normalizaDados(DadosProntos_RSI_Teste,DigitosDePrecisao,"0");
+   return true;
+  }
+
+
+// Função para ler o oscilador estocástico
+bool LerStochastic()
+  {
+   double SomaStochastic_K;
+   double SomaStochastic_D;
+   MqlRates rates[];
+   ArraySetAsSeries(rates,true);
+   ArraySetAsSeries(stochastic_k,true);
+   ArraySetAsSeries(stochastic_d,true);
+   ArrayResize(rates, num_candles);
+   ArrayResize(stochastic_k,num_candles);
+   ArrayResize(DadosProntos_stochastic_d,PeriodoDeColetaDeDadosParaAprendizado);
+   ArrayResize(DadosProntos_stochastic_k,PeriodoDeColetaDeDadosParaAprendizado);
+   ArrayResize(stochastic_d,num_candles);
+   for(int A = 0; A < PeriodoDeColetaDeDadosParaAprendizado; A++)
+     {
+      SomaStochastic_K = 0;
+      SomaStochastic_D = 0;;
+      if(CopyRates(Symbol(), 0, A + PeriodoParaResultado  + IntervaloDaExtracao, num_candles, rates) == num_candles)
+        {
+         for(int i = 0; i < num_candles; i++)
+           {
+            double lowestLow = rates[i].low;
+            double highestHigh = rates[i].high;
+            for(int j = i - period_stochastic + 1; j <= i; j++)
+              {
+               if(j >= 0)
+                 {
+                  if(rates[j].low < lowestLow)
+                     lowestLow = rates[j].low;
+                  if(rates[j].high > highestHigh)
+                     highestHigh = rates[j].high;
+                 }
+              }
+            stochastic_k[i] = (rates[i].close - lowestLow) / (highestHigh - lowestLow) * 100;
+            if(i > 0)
+              {
+               stochastic_d[i] = (stochastic_d[i-1] * 3 + stochastic_k[i]) / 4;
+              }
+            else
+              {
+               stochastic_d[i] = stochastic_k[i];
+              }
+            SomaStochastic_D += stochastic_d[i];
+            SomaStochastic_K += stochastic_k[i];
+
+           }
+        }
+      DadosProntos_stochastic_d[A] = SomaStochastic_D;
+      DadosProntos_stochastic_k[A] = SomaStochastic_K;
+      if((ArraySize(DadosProntos_stochastic_d) != PeriodoDeColetaDeDadosParaAprendizado) || (ArraySize(DadosProntos_stochastic_k) != PeriodoDeColetaDeDadosParaAprendizado))
+        {
+         return false;
+        }
+     }
+   normalizaDados(DadosProntos_stochastic_d,DigitosDePrecisao,"0");
+   normalizaDados(DadosProntos_stochastic_k,DigitosDePrecisao,"0");
+   return true;
+  }
+
+// Função para ler o oscilador estocástico DADOS DE TESTES
+bool LerStochastic_Teste()
+  {
+   double SomaStochastic_K;
+   double SomaStochastic_D;
+   MqlRates rates[];
+   ArraySetAsSeries(rates,true);
+   ArraySetAsSeries(stochastic_k_Teste,true);
+   ArraySetAsSeries(stochastic_d_Teste,true);
+   ArrayResize(rates, num_candles);
+   ArrayResize(stochastic_k_Teste,num_candles);
+   ArrayResize(DadosProntos_stochastic_d_Teste,PeriodoDeColetaDeDadosParaAprendizado);
+   ArrayResize(DadosProntos_stochastic_k_Teste,PeriodoDeColetaDeDadosParaAprendizado);
+   ArrayResize(stochastic_d_Teste,num_candles);
+   for(int A = 0; A < PeriodoDeColetaDeDadosParaAprendizado; A++)
+     {
+      SomaStochastic_K = 0;
+      SomaStochastic_D = 0;;
+      if(CopyRates(Symbol(), 0, A + PeriodoParaResultado, num_candles, rates) == num_candles)
+        {
+         for(int i = 0; i < num_candles; i++)
+           {
+            double lowestLow = rates[i].low;
+            double highestHigh = rates[i].high;
+            for(int j = i - period_stochastic + 1; j <= i; j++)
+              {
+               if(j >= 0)
+                 {
+                  if(rates[j].low < lowestLow)
+                     lowestLow = rates[j].low;
+                  if(rates[j].high > highestHigh)
+                     highestHigh = rates[j].high;
+                 }
+              }
+            stochastic_k_Teste[i] = (rates[i].close - lowestLow) / (highestHigh - lowestLow) * 100;
+            if(i > 0)
+              {
+               stochastic_d_Teste[i] = (stochastic_d_Teste[i-1] * 3 + stochastic_k_Teste[i]) / 4;
+              }
+            else
+              {
+               stochastic_d_Teste[i] = stochastic_k_Teste[i];
+              }
+            SomaStochastic_D += stochastic_d_Teste[i];
+            SomaStochastic_K += stochastic_k_Teste[i];
+
+           }
+        }
+      DadosProntos_stochastic_d_Teste[A] = SomaStochastic_D;
+      DadosProntos_stochastic_k_Teste[A] = SomaStochastic_K;
+      if((ArraySize(DadosProntos_stochastic_d_Teste) != PeriodoDeColetaDeDadosParaAprendizado) || (ArraySize(DadosProntos_stochastic_k_Teste) != PeriodoDeColetaDeDadosParaAprendizado))
+        {
+         return false;
+        }
+     }
+   normalizaDados(DadosProntos_stochastic_d_Teste,DigitosDePrecisao,"0");
+   normalizaDados(DadosProntos_stochastic_k_Teste,DigitosDePrecisao,"0");
+   return true;
+  }
+//-------------------------------------------------------------------
+//Coleta dados para a aprendizagem
+bool ColetaDadosAprendizagem()
+  {
+// Chamando as funções de leitura de dados
+   if(!LerCandles())
+     {
+      Print("Função: LerCandles() com problema de Array");
+      return false;
+     }
+
+   if(!LerRSI())
+     {
+      Print("Função: LerRSI() com problema de Array");
+      return false;
+     }
+   if(!LerStochastic())
+     {
+      Print("Função: LerStochastic() com problema de Array");
+      return false;
+     }
+//Verifica a rotulação
+   if(!VerificaTendenciaERotula(PeriodoParaResultado))
+     {
+      Print("Função: VerificaTendenciaERotula() com problema de Array");
+      return false;
+     }
+//Verifica a rotulação
+   if(!DiferencaDeMedias())
+     {
+      Print("Função: DiferencaDeMedias() com problema de Array");
+      return false;
+     }
+
+   return true;
+  }
+
+//Coleta dados para TESTES
+bool ColetaDadosAprendizagem_Teste()
+  {
+// Chamando as funções de leitura de dados
+   if(!LerCandles_Teste())
+     {
+      Print("Função: LerCandles_Teste() com problema de Array");
+      return false;
+     }
+
+   if(!LerRSI_Teste())
+     {
+      Print("Função: LerRSI_Teste() com problema de Array");
+      return false;
+     }
+   if(!LerStochastic_Teste())
+     {
+      Print("Função: LerStochastic_Teste() com problema de Array");
+      return false;
+     }
+//Verifica a rotulação
+   if(!VerificaTendenciaERotula_Teste(PeriodoParaResultado))
+     {
+      Print("Função: VerificaTendenciaERotula_Teste() com problema de Array");
+      return false;
+     }
+//Verifica a rotulação
+   if(!DiferencaDeMedias_Teste())
+     {
+      Print("Função: DiferencaDeMedias_Teste() com problema de Array");
+      return false;
+     }
+
+   return true;
+  }
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+void TornaArraysSeries()
+  {
+   ArraySetAsSeries(candles,true);
+   ArraySetAsSeries(RSI,true);
+   ArraySetAsSeries(stochastic_k,true);
+   ArraySetAsSeries(stochastic_d,true);
+   ArraySetAsSeries(media_movel_X,true);
+   ArraySetAsSeries(media_movel_Y,true);
+
+   ArraySetAsSeries(DadosProntos_candles,true);
+   ArraySetAsSeries(DadosProntos_RSI,true);
+   ArraySetAsSeries(DadosProntos_stochastic_k,true);
+   ArraySetAsSeries(DadosProntos_stochastic_d,true);
+   ArraySetAsSeries(DadosProntos_media_movel,true);
+//------------
+   ArraySetAsSeries(candles_Teste,true);
+   ArraySetAsSeries(RSI_Teste,true);
+   ArraySetAsSeries(stochastic_k_Teste,true);
+   ArraySetAsSeries(stochastic_d_Teste,true);
+   ArraySetAsSeries(media_movel_X_Teste,true);
+   ArraySetAsSeries(media_movel_Y_Teste,true);
+
+   ArraySetAsSeries(DadosProntos_candles_Teste,true);
+   ArraySetAsSeries(DadosProntos_RSI_Teste,true);
+   ArraySetAsSeries(DadosProntos_stochastic_k_Teste,true);
+   ArraySetAsSeries(DadosProntos_stochastic_d_Teste,true);
+   ArraySetAsSeries(DadosProntos_media_movel_Teste,true);
+  }
+//Imprime relatório
+void ImprimeRelatorio()
+  {
+   int Total = ContaSubiu + ContaCaiu + ContaNeutro;
+   double Tol = ToleranciaDeVariacao*100;
+   Print("-----------------------------------");
+   Print(PeriodoDeColetaDeDadosParaAprendizado," LINHAS DE DADOS PARA CADA TIPO");
+   Print("Tolerância de variação: ",(int)LimitaDigitos(Tol,0)," centavos");
+   Print("Subiu: ",ContaSubiu,"  ",(double)ContaSubiu/Total*100,"%");
+   Print("Caiu: ",ContaCaiu,"  ",(double)ContaCaiu/Total*100,"%");
+   Print("Neutro: ",ContaNeutro,"  ",(double)ContaNeutro/Total*100,"%");
+  }
+//-------------------------------------------------------------------
+//Imprime todos os dados já coletados
+void ImprimeDadosColetados()
+  {
+   Print("-----------------------------------");
+   Print("Dados: Tipos de candles");
+   for(int i = 0; i < PeriodoDeColetaDeDadosParaAprendizado; i++)
+     {
+      Print("Índice ",i," = ",DadosProntos_candles[i]," = ",ArrayRotulacaoString[i], " Matriz: ",ConcatenaMatriz(i));
+     }
+   Print("-----------------------------------");
+   Print("Dados: Dados de Bollinger superior");
+
+   Print("-----------------------------------");
+   Print("Dados: Indicador RSI");
+   for(int i = 0; i < PeriodoDeColetaDeDadosParaAprendizado; i++)
+     {
+      Print("Índice ",i," = ",DadosProntos_RSI[i]," = ",ArrayRotulacaoString[i], " Matriz: ",ConcatenaMatriz(i));
+     }
+   Print("-----------------------------------");
+   Print("Dados: Indicador Estocástico");
+   Print("Dados: Indicador D");
+   for(int i = 0; i < PeriodoDeColetaDeDadosParaAprendizado; i++)
+     {
+      Print("Índice ",i," = ",DadosProntos_stochastic_d[i]," = ",ArrayRotulacaoString[i], " Matriz: ",ConcatenaMatriz(i));
+     }
+   Print("Dados: Indicador K");
+   for(int i = 0; i < PeriodoDeColetaDeDadosParaAprendizado; i++)
+     {
+      Print("Índice ",i," = ",DadosProntos_stochastic_k[i]," = ",ArrayRotulacaoString[i], " Matriz: ",ConcatenaMatriz(i));
+     }
+   Print("-----------------------------------");
+   Print("Dados: Diferença entre médias móveis");
+   for(int i = 0; i < PeriodoDeColetaDeDadosParaAprendizado; i++)
+     {
+      Print("Índice ",i," = ",DadosProntos_media_movel[i]," = ",ArrayRotulacaoString[i], " Matriz: ",ConcatenaMatriz(i));
+     }
+
+  }
+
+
+
+
+
+//+------------------------------------------------------------------+
+int OnInit()
+  {
+   TornaArraysSeries();
+//---
+   if(!ColetaDadosAprendizagem())
+     {
+      Print("Erro de armazenamento");
+     }
+   if(!ColetaDadosAprendizagem_Teste())
+     {
+      Print("Erro de armazenamento nos dados de teste");
+     }
+   PreencheMatrizes();
+   PreencheMatrizesDeTestes();
+//---
+   ImprimeDadosColetados();
+   ImprimeRelatorio();
+//---
+// Treinar a rede neural com os dados de treinamento
+   NN.Train(Matriz_Dados, Matriz_Classes);
+
+
+// Realizar a previsão com base na matriz de entrada
+   matrix pred = NN.Prediction(Matriz_Dados);
+   Print("Resultado:");
+
+
+   for(int i = 0; i < PeriodoDeColetaDeDadosParaAprendizado; i++)
+     {
+     int Subiu = 0;
+     int Caiu = 0;
+      if((pred[i][0] > pred[i][1]) && (pred[i][0] > pred[i][2]))
+        {
+         ResultPrevisao[i][0] = 1;
+         ResultPrevisao[i][1] = 0;
+         ResultPrevisao[i][2] = 0;
+         Subiu++;
+        }
+      if(pred[i][1]>pred[i][0] && pred[i][1]> pred[i][2])
+        {
+         ResultPrevisao[i][0] = 0;
+         ResultPrevisao[i][1] = 1;
+         ResultPrevisao[i][2] = 0;
+        }
+      if(pred[i][2]>pred[i][1] && pred[i][2]> pred[i][0])
+        {
+         ResultPrevisao[i][0] = 0;
+         ResultPrevisao[i][1] = 0;
+         ResultPrevisao[i][2] = 1;
+         Caiu++;
+        }
+      Print(ResultPrevisao[i][0],ResultPrevisao[i][1],ResultPrevisao[i][2],"  ==>  ",MatrizClasses_Teste[i][0],MatrizClasses_Teste[i][1],MatrizClasses_Teste[i][2]);
+     PreviuQueSubiu += Subiu;
+     PreviuQueCaiu += Caiu;
+     PercentualAcertosSubiu = (double)AcertosSubiu/PreviuQueSubiu*100;
+     PercentualAcertosCaiu = (double)AcertosCaiu/PreviuQueCaiu*100;
+     }
+     //Print(pred);
+   ContaAcertosErrosPercentuais();
+   Print("Acertos = ",Acertos,"  ",PercentualAcertos,"%            Somente que subiu ↑ ",PercentualAcertosSubiu,"%");
+   Print("Erros   = ",Erros,"  ",PercentualErros,"%            Somente que caiu ↓ ",PercentualAcertosSubiu,"%");
+   Print("Previu que subiu: ",PreviuQueSubiu);
+   Print("Previu que caiu: ",PreviuQueCaiu);
+   return(INIT_SUCCEEDED);
+  }
+
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+  {
+//---
+
+  }
+
+//-------------------
+void OnTick()
+  {
+
+  }
+//+------------------------------------------------------------------+
